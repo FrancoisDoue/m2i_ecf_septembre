@@ -1,0 +1,157 @@
+version: "3.8"
+
+networks:
+  ecf_network:
+volumes:
+  ecf_volumes:
+  ecf_cache:
+    driver: local
+
+services:
+  mysql:
+    container_name: mysql_ecf
+    image: mysql:8.0.39
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_USER: mysqluser
+      MYSQL_PASSWORD: dbpass
+      MYSQL_DATABASE: ecf_database
+    volumes:
+      - ecf_volumes:/var/lib/mysql
+      - ./mysql-db/user.sql:/docker-entrypoint-initdb.d/privileges.sql
+    ports:
+      - "6033:3306"
+    networks:
+      - ecf_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 5s
+      retries: 10
+  # ------------------------------------------------------------- #
+  cache-redis:
+    container_name: cache-redis
+    image: redis:7.4.0-alpine
+    restart: always
+    command: redis-server --requirepass redispass
+    ports:
+      - "6379:6379"
+    volumes:
+      - ecf_volumes:/data
+    networks:
+      - ecf_network
+  # ------------------------------------------------------------- #
+  php_my_admin:
+    container_name: admin_ms_library
+    image: phpmyadmin:latest
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "3030:80"
+    environment:
+      PMA_HOST: mysql_ecf
+    networks:
+      - ecf_network
+  # ------------------------------------------------------------- #
+  common-data-service:
+    container_name: common-data-service
+    build: ./server/common-data-service
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      cache-redis:
+        condition: service_started
+    environment:
+      PORT: 8080
+      ACTIVE_PROFILE: dev
+#      Pour le profil prod:
+#      REDIS_URL: redis://redis-root:redispass@redis-cache
+      DB_HOST: mysql_ecf
+      DB_PORT: 3306
+      DB_SCHEMA: ecf_database
+      DB_USER: mysqluser
+      DB_PASS: dbpass
+      REDIS_HOST: cache-redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: redispass
+    command:
+      - spring.jpa.hibernate.ddl-auto=update
+      - logging.level.org.hibernate.SQL=DEBUG
+      - logging.level.org.hibernate.type.descriptor.sql.BasicBinder=TRACE
+      - logging.level.org.springframework.jdbc.core.JdbcTemplate=DEBUG
+      - logging.level.org.springframework.jdbc.core.StatementCreatorUtils=TRACE
+    ports:
+      - "8080:8080"
+    networks:
+      - ecf_network
+  # ------------------------------------------------------------- #
+  authentication-service:
+    container_name: authentication-service
+    build: ./server/authentication-service
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      cache-redis:
+        condition: service_started
+    environment:
+      PORT: 8080
+      ACTIVE_PROFILE: dev
+      DB_HOST: mysql_ecf
+      DB_PORT: 3306
+      DB_SCHEMA: ecf_database
+      DB_USER: mysqluser
+      DB_PASS: dbpass
+    ports:
+      - "8081:8080"
+    networks:
+      - ecf_network
+  # ------------------------------------------------------------- #
+  search-suggestion-service:
+    container_name: search-suggestion-service
+    build: ./server/search-suggestion-service
+    restart: unless-stopped
+    depends_on:
+      - common-data-service
+    environment:
+      PORT: 8080
+      ACTIVE_PROFILE: dev
+      COMMON_DATA_SERVICE_URL: http://common-data-service:8080
+    ports:
+      - "8082:8080"
+    networks:
+      - ecf_network
+  # ------------------------------------------------------------- #
+  payment-service:
+    container_name: payment-service
+    build: ./server/payment-service
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      STRIPE_SECRET_KEY: react_better_than_vue
+    ports:
+      - "8083:8080"
+    networks:
+      - ecf_network
+  # ============================================================ #
+  client-react:
+    container_name: client-react
+    build: ./client
+    restart: on-failure
+    depends_on:
+      - authentication-service
+      - common-data-service
+    environment:
+      PORT: 80
+      REACT_APP_PORT: 80
+      REACT_APP_ENVIRONMENT: dev
+      REACT_APP_PAYMENT_SERVICE_URL: http://payment-service:8080
+      REACT_APP_AUTHENTICATION_SERVICE_URL: http://authentication-service:8080
+      REACT_APP_COMMON_DATA_SERVICE_URL: http://common-data-service:8080
+      REACT_APP_SEARCH_SUGGESTION_SERVICE_URL: http://search-suggestion-service:8080
+    ports:
+      - "80:80"
+    networks:
+      - ecf_network
