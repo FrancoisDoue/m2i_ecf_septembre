@@ -150,7 +150,7 @@ services:
     environment:
       REACT_APP_ENVIRONMENT: dev
     ports:
-      - "80:3000"
+      - "3000:3000"
     networks:
       - ecf_network
 
